@@ -1,0 +1,107 @@
+# =============================================================================
+# ai-toolkit config — FLUX.2 Klein 4B edit LoRA: GDS layout -> SEM image
+#
+# Trains DIRECTLY on your dataset layout, mounted at /workspace/gds_2_sem:
+#   gds_2_sem/
+#     A/train  GDS control images   A/val  GDS validation images
+#     B/train  SEM target images    B/val  SEM validation images
+# Pairs are matched by filename (A/train/x.png <-> B/train/x.png; the
+# extension may differ). No resizing needed: targets are bucketed to 512,
+# and ai-toolkit passes GDS control images through raw for FLUX.2
+# (center-cropped 465 -> 464 internally to satisfy the VAE).
+#
+# Run inside the training container:
+#   python run.py /workspace/config.yaml
+# =============================================================================
+job: extension
+config:
+  name: "gds2sem_klein4b_v1"
+  process:
+    - type: "diffusion_trainer"
+      training_folder: "/workspace/output"
+      device: cuda:0
+
+      # Trigger token, also present in default_caption / generated captions.
+      trigger_word: "g2s3m"
+
+      network:
+        type: "lora"
+        # Rank 32 is a good start for a structure-preserving style/edit task.
+        # If SEM texture is under-learned try 64; if layouts start drifting
+        # (rectangles move/merge) try 16.
+        linear: 32
+        linear_alpha: 32
+
+      save:
+        dtype: bf16
+        save_every: 250
+        max_step_saves_to_keep: 10
+
+      datasets:
+        - folder_path: "/workspace/gds_2_sem/B/train"    # SEM targets
+          control_path: "/workspace/gds_2_sem/A/train"   # GDS controls (paired by filename)
+          caption_ext: "txt"
+          # Used for any image without a matching .txt file. Run
+          # scripts/setup_dataset.py to (optionally) generate per-image
+          # orientation-aware captions into B/train.
+          default_caption: "g2s3m convert this GDS standard cell layout into a scanning electron microscope image, preserving the exact position and size of every rectangle, grayscale SEM texture with realistic noise, edge roughness and slight blur"
+          # Small dropout pushes the model to rely on the control image for
+          # structure rather than memorizing caption->image.
+          caption_dropout_rate: 0.05
+          shuffle_tokens: false
+          cache_latents_to_disk: true
+          # Nearest bucket above 465; targets are scaled up to it.
+          resolution: [ 512 ]
+
+      train:
+        batch_size: 2                 # fits easily in 48 GB at 512px, 4B model
+        steps: 3000                   # expect the sweet spot around 1500-2500
+        gradient_accumulation_steps: 1
+        train_unet: true
+        train_text_encoder: false
+        gradient_checkpointing: true
+        noise_scheduler: "flowmatch"
+        optimizer: "adamw8bit"
+        lr: 1e-4
+        optimizer_params:
+          weight_decay: 0.0001
+        timestep_type: "weighted"
+        dtype: bf16
+
+      model:
+        # Train on the UNDISTILLED base model; run inference on base or the
+        # 4-step distilled model (the LoRA transfers).
+        # Resolved offline from the mounted HF cache (HF_HUB_OFFLINE=1):
+        #   - flux-2-klein-base-4b.safetensors  <- black-forest-labs/FLUX.2-klein-base-4B
+        #   - ae.safetensors (VAE)              <- ai-toolkit/flux2_vae
+        #   - text encoder                      <- Qwen/Qwen3-4B (hardcoded in ai-toolkit)
+        name_or_path: "black-forest-labs/FLUX.2-klein-base-4B"
+        arch: "flux2_klein_4b"
+        # 96 GB total VRAM -> no quantization needed; full bf16 quality.
+        quantize: false
+        quantize_te: false
+        low_vram: false
+
+      sample:
+        sampler: "flowmatch"
+        sample_every: 250
+        sample_start_step: 0
+        width: 512
+        height: 512
+        # Held-out GDS inputs from A/val, so samples measure generalization.
+        # scripts/setup_dataset.py rewrites this block with your actual
+        # A/val filenames — or edit the paths by hand.
+        prompts:
+          - "g2s3m convert this GDS standard cell layout into a scanning electron microscope image, preserving the exact position and size of every rectangle --ctrl_img /workspace/gds_2_sem/A/val/REPLACE_ME_0.png"
+          - "g2s3m convert this GDS standard cell layout into a scanning electron microscope image, preserving the exact position and size of every rectangle --ctrl_img /workspace/gds_2_sem/A/val/REPLACE_ME_1.png"
+          - "g2s3m convert this GDS standard cell layout into a scanning electron microscope image, preserving the exact position and size of every rectangle --ctrl_img /workspace/gds_2_sem/A/val/REPLACE_ME_2.png"
+          - "g2s3m convert this GDS standard cell layout into a scanning electron microscope image, preserving the exact position and size of every rectangle --ctrl_img /workspace/gds_2_sem/A/val/REPLACE_ME_3.png"
+        neg: ""
+        seed: 42
+        walk_seed: false
+        guidance_scale: 4
+        sample_steps: 20
+
+meta:
+  name: "[name]"
+  version: "1.0"
