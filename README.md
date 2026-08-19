@@ -67,7 +67,9 @@ gds2sem-flux2-klein/
 │   │   ├── gds2sem_klein4b_base_lora.json       # 20 steps, CFG 4
 │   │   └── gds2sem_klein4b_distilled_lora.json  # 4 steps, CFG 1
 │   └── scripts/batch_infer.py       # headless folder→folder conversion via API
-└── eval/eval_structure.py           # IoU + SSIM checkpoint scoring
+└── eval/
+    ├── eval_structure.py            # IoU + SSIM checkpoint scoring
+    └── overlay_compare.py           # visual C-over-A overlay + diff maps
 ```
 
 ## Step 1 — Online machine: build images and download weights
@@ -221,6 +223,36 @@ generation (rectangle-preservation score — this is the number that matters
 for your use case) plus SSIM against the real SEM. Sweep your saved LoRA
 steps through batch inference and keep the checkpoint with the best
 IoU/visual balance.
+
+## Step 6 — Visual overlay comparison (C over A)
+
+Store the FLUX-generated images under `gds_2_sem/C/train` and
+`gds_2_sem/C/val`, mirroring A and B (filenames matched by stem; ComfyUI
+counter suffixes like `_00001_` are stripped automatically, and C's 512px
+outputs are resized back to A's dimensions). Then:
+
+```bash
+python3 eval/overlay_compare.py --root /path/to/gds_2_sem --split val
+# both splits, custom transparency:
+python3 eval/overlay_compare.py --root /path/to/gds_2_sem --split both --alpha 0.55
+```
+
+For every pair it writes three images into `comparisons/<split>/`:
+
+- `overlay_<name>.png` — C blended semi-transparently over A (`--alpha`
+  sets C's opacity, default 0.55), so the original rectangles show through
+  for a direct visual match check.
+- `diff_<name>.png` — structure difference map: rectangle pixels present
+  in both A and C stay **white**, additional pixels that C introduced are
+  **green**, pixels from A that C failed to reproduce are **red**, and
+  shared background stays black. A is binarized at mid-gray; C (a grayscale
+  SEM rendering) is binarized with Otsu's threshold.
+- `panel_<name>.png` — one strip of `[ A | C | overlay | diff ]` for quick
+  flipping through the whole set.
+
+It also prints per-image and mean IoU / extra% / missing% and writes them
+to `comparisons/stats.csv` — the same numbers you'd use to rank
+checkpoints, now attached to the visuals.
 
 ## Troubleshooting notes
 
