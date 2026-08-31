@@ -71,11 +71,18 @@ config:
       model:
         # Train on the UNDISTILLED base model; run inference on base or the
         # 4-step distilled model (the LoRA transfers).
-        # Resolved offline from the mounted HF cache (HF_HUB_OFFLINE=1):
-        #   - flux-2-klein-base-4b.safetensors  <- black-forest-labs/FLUX.2-klein-base-4B
-        #   - ae.safetensors (VAE)              <- ai-toolkit/flux2_vae
-        #   - text encoder                      <- Qwen/Qwen3-4B (hardcoded in ai-toolkit)
-        name_or_path: "black-forest-labs/FLUX.2-klein-base-4B"
+        # FULLY LOCAL — no Hugging Face hub, no HF cache. This directory is
+        # mounted by run_training.sh and must contain:
+        #   flux-2-klein-base-4b.safetensors   (transformer)
+        #   ae.safetensors                     (FLUX.2 VAE, BFL format;
+        #                                       flux2-vae.safetensors also works)
+        #   qwen3-4b/                          (full transformers-format text
+        #                                       encoder dir; wired in by
+        #                                       scripts/run_offline.py)
+        name_or_path: "/models/flux2-klein"
+        # Optional: point at a VAE file elsewhere (run_offline.py's
+        # auto-detection inside name_or_path usually makes this unnecessary):
+        # vae_path: "/models/flux2-klein/flux2-vae.safetensors"
         arch: "flux2_klein_4b"
         # 96 GB total VRAM -> no quantization needed; full bf16 quality.
         quantize: false

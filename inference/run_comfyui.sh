@@ -14,7 +14,7 @@
 set -euo pipefail
 
 GPU="${GPU:-1}"                       # keep GPU 0 free for training
-COMFY_MODELS="${COMFY_MODELS:-$PWD/comfy_models}"
+COMFY_MODELS="${COMFY_MODELS:-$PWD/transfer/comfy_models}"
 DATA="${DATA:-$PWD/comfy_data}"       # input/output/user dirs live here
 IMAGE="${IMAGE:-gds2sem-comfy:v1}"
 

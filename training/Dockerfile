@@ -70,17 +70,25 @@ print("torch OK:", torch.__version__, "| torchvision:", torchvision.__version__)
 EOF
 
 # ---- offline runtime behavior ------------------------------------------------
-# Model weights are NOT baked into the image. At runtime we mount a
-# pre-populated Hugging Face cache and force offline resolution.
-ENV HF_HOME=/huggingface
+# NO Hugging Face usage at runtime: all weights are plain local files mounted
+# at /models/flux2-klein and wired in by run_offline.py. The offline env vars
+# are a tripwire — any code path that still tried to reach the hub fails fast
+# instead of hanging. (The transformers/huggingface_hub *libraries* remain
+# installed as ai-toolkit dependencies; they just never touch the network or
+# a cache.)
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1
 ENV HF_HUB_ENABLE_HF_TRANSFER=0
 ENV DO_NOT_TRACK=1
 ENV DISABLE_TELEMETRY=1
+ENV FLUX2_MODEL_DIR=/models/flux2-klein
 
-VOLUME ["/huggingface", "/workspace"]
+# Local-weights launcher (patches ai-toolkit's hardcoded text-encoder hub id
+# to the mounted local directory, then runs run.py).
+COPY scripts/run_offline.py /app/run_offline.py
+
+VOLUME ["/models/flux2-klein", "/workspace"]
 
 WORKDIR /app/ai-toolkit
 # default: run whatever config is mounted at /workspace/config.yaml
-CMD ["python", "run.py", "/workspace/config.yaml"]
+CMD ["python", "/app/run_offline.py", "/workspace/config.yaml"]

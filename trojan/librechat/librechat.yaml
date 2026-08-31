@@ -1,0 +1,73 @@
+# =============================================================================
+# LibreChat configuration for the SEM trojan-screening workflow.
+# Place at the path LibreChat reads (mounted as /app/librechat.yaml, or set
+# CONFIG_PATH). Adjust to your installed LibreChat version's schema if needed.
+#
+# What this sets up:
+#   * the trojan-detector MCP server (the container from run_detector_mcp.sh),
+#     reachable over streamable-http, so its tools appear to the agent
+#   * an Anthropic endpoint backed by Opus 5 for the reasoning/agent layer
+#   * an image-centric agent preset with instructions for the A/B/C -> D flow
+# =============================================================================
+version: 1.2.8
+cache: true
+
+# ---- MCP servers ------------------------------------------------------------
+mcpServers:
+  trojan-detector:
+    # The detection container publishes an HTTP MCP endpoint (MCP_HTTP=1).
+    # If you instead launch it stdio-style per request, replace this block
+    # with a `command: docker` + `args: [run, --rm, -i, ...]` form.
+    type: streamable-http
+    url: http://localhost:8130/mcp
+    timeout: 600000            # detection over a big directory can take a while
+    # These tools are safe to expose to the agent:
+    #   list_trojan_patterns, detect_trojans, show_detection, inject_trojans
+
+# ---- endpoints --------------------------------------------------------------
+endpoints:
+  # Opus 5 as the agent backend. Key comes from ANTHROPIC_API_KEY in .env
+  # (or your offline Anthropic-compatible gateway via a custom endpoint).
+  agents:
+    disableBuilder: false
+    # Let the agent call the MCP tools and show returned images inline.
+    capabilities:
+      - tools
+      - actions
+      - artifacts
+
+  custom:
+    # If Opus 5 is served through an internal OpenAI/Anthropic-compatible
+    # gateway on the offline network, point to it here instead of public API.
+    - name: "Opus5-Gateway"
+      apiKey: "${OPUS_GATEWAY_KEY}"
+      baseURL: "${OPUS_GATEWAY_URL}"       # e.g. http://llm-gw.internal/v1
+      models:
+        default: ["claude-opus-5"]
+        fetch: false
+      titleConvo: true
+      titleModel: "claude-opus-5"
+      modelDisplayLabel: "Opus 5 (offline gateway)"
+
+# ---- UI ----------------------------------------------------------------------
+interface:
+  # Image-centric workflow: keep file upload + rich rendering prominent.
+  privacyPolicy:
+    externalUrl: ""
+  endpointsMenu: true
+  modelSelect: true
+  parameters: true
+  presets: true
+  # allow image files to be attached to messages (the agent references paths
+  # under the data root; attachments are for eyeballing inputs)
+fileConfig:
+  endpoints:
+    agents:
+      fileLimit: 50
+      fileSizeLimit: 20          # MB per image
+      totalSizeLimit: 500
+      supportedMimeTypes:
+        - "image/png"
+        - "image/jpeg"
+        - "image/tiff"
+  serverFileSizeLimit: 100
