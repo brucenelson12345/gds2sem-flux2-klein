@@ -1,0 +1,9 @@
+# Trojan detection + MCP server deps (installed after torch cu126).
+# Pin versions you actually mirror on the offline PyPI; these are known-good.
+numpy==2.1.3
+pillow==11.0.0
+opencv-python-headless==4.11.0.86
+scikit-image==0.25.0
+mcp==1.2.0
+ultralytics==8.3.40          # YOLO backend + training (optional at runtime)
+pyyaml==6.0.2

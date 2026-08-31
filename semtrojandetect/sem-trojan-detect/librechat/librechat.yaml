@@ -1,0 +1,74 @@
+# =============================================================================
+# LibreChat configuration for the SEM trojan-screening workflow.
+# Mount at /app/librechat.yaml (or set CONFIG_PATH). Match the schema to your
+# installed LibreChat version if it differs.
+#
+# Model access: Claude is reached through your existing **Open WebUI**
+# instance, which exposes an OpenAI-compatible API. LibreChat appends
+# /chat/completions and /models to the baseURL below, which lines up with
+# Open WebUI's /api/chat/completions and /api/models — so the baseURL is the
+# Open WebUI root plus /api.
+#
+# Put the secrets in LibreChat's .env (see .env.example):
+#   OPENWEBUI_URL=http://webui.internal:3000
+#   OPENWEBUI_API_KEY=sk-...        # Settings -> Account -> API Keys
+# =============================================================================
+version: 1.2.8
+cache: true
+
+# ---- MCP servers ------------------------------------------------------------
+mcpServers:
+  trojan-detector:
+    # The detection container publishes an HTTP MCP endpoint (MCP_HTTP=1).
+    type: streamable-http
+    url: http://localhost:8130/mcp
+    timeout: 600000            # screening a large directory takes a while
+    # Tools exposed: list_trojan_patterns, detect_trojans, show_detection,
+    #                inject_trojans, generate_sem
+
+# ---- endpoints --------------------------------------------------------------
+endpoints:
+  agents:
+    disableBuilder: false
+    capabilities:
+      - tools
+      - actions
+      - artifacts
+
+  custom:
+    # Claude via Open WebUI. Users authenticate with their OWN Open WebUI API
+    # token when userProvide is set, so each analyst's usage is attributable
+    # on the Open WebUI side. To use one shared service token instead,
+    # replace "user_provided" with "${OPENWEBUI_API_KEY}".
+    - name: "OpenWebUI"
+      apiKey: "user_provided"
+      baseURL: "${OPENWEBUI_URL}/api"
+      models:
+        # Discovered from GET {baseURL}/models. Pin the list instead if the
+        # instance exposes many non-Claude models.
+        default: ["claude-opus-5"]
+        fetch: true
+      titleConvo: true
+      titleModel: "claude-opus-5"
+      modelDisplayLabel: "Claude (Open WebUI)"
+      # Open WebUI speaks the OpenAI schema; no body transform needed.
+      dropParams: ["stop"]
+
+# ---- UI ----------------------------------------------------------------------
+interface:
+  endpointsMenu: true
+  modelSelect: true
+  parameters: true
+  presets: true
+
+fileConfig:
+  endpoints:
+    agents:
+      fileLimit: 50
+      fileSizeLimit: 20          # MB per image
+      totalSizeLimit: 500
+      supportedMimeTypes:
+        - "image/png"
+        - "image/jpeg"
+        - "image/tiff"
+  serverFileSizeLimit: 100
