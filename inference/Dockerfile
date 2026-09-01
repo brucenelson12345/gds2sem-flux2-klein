@@ -38,6 +38,20 @@ assert "+cu126" in torch.__version__, torch.__version__
 print("torch OK:", torch.__version__)
 EOF
 
+# ---- default-workflow extension --------------------------------------------
+# ComfyUI has no server-side "default workflow" setting (which graph you see
+# on load is browser-local state), so we ship a tiny custom-node package whose
+# only job is a web extension that opens our workflow on startup. The
+# workflows are also bundled inside it as a fallback for an empty user/ mount.
+COPY comfy_extensions/gds2sem_default_workflow \
+     /comfy/ComfyUI/custom_nodes/gds2sem_default_workflow
+COPY workflows \
+     /comfy/ComfyUI/custom_nodes/gds2sem_default_workflow/js/workflows
+
+# Seed copy of the workflows, used by run_comfyui.sh to populate an empty
+# user/default/workflows/ on the host so they show in the Workflows sidebar.
+COPY workflows /opt/gds2sem/workflows
+
 # Model dirs are bind-mounted at runtime (see run_comfyui.sh)
 VOLUME ["/comfy/ComfyUI/models", "/comfy/ComfyUI/input", "/comfy/ComfyUI/output", "/comfy/ComfyUI/user"]
 

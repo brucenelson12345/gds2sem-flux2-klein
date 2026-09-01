@@ -75,23 +75,18 @@ gds2sem-flux2-klein/
 │   └── run_training.sh              # docker run wrapper (offline)
 ├── inference/
 │   ├── Dockerfile                   # ComfyUI, torch cu126
-│   ├── run_comfyui.sh               # docker run wrapper (offline)
+│   ├── run_comfyui.sh               # docker run wrapper + workflow seeding
+│   ├── comfy_extensions/            # startup extension: opens the workflow
 │   ├── workflows/
 │   │   ├── gds2sem_klein4b_base_lora.json       # 20 steps, CFG 4
 │   │   └── gds2sem_klein4b_distilled_lora.json  # 4 steps, CFG 1
 │   └── scripts/batch_infer.py       # headless folder→folder conversion via API
-├── eval/
-│   ├── eval_structure.py            # IoU + SSIM checkpoint scoring
-│   ├── overlay_compare.py           # visual C-over-A overlay + diff maps
-│   ├── matchlib.py                  # shared image helpers (cv2 + numpy paths)
-│   ├── match_gds_sem.py             # per-cell A→C matcher, green/red @ threshold
-│   └── match_sem_sem.py             # B→C SEM matcher, green/red @ threshold
-└── trojan/                          # hardware-trojan screening (see trojan/README.md)
-    ├── scripts/                     # patterns, inject, detect, eval, YOLO export/train
-    ├── mcp/server.py                # MCP server for LibreChat
-    ├── librechat/                   # librechat.yaml + agent instructions
-    ├── docker/                      # detection + MCP image (cu126, offline)
-    └── run_detector_mcp.sh
+└── eval/
+    ├── eval_structure.py            # IoU + SSIM checkpoint scoring
+    ├── overlay_compare.py           # visual C-over-A overlay + diff maps
+    ├── matchlib.py                  # shared image helpers (cv2 + numpy paths)
+    ├── match_gds_sem.py             # per-cell A→C matcher, green/red @ threshold
+    └── match_sem_sem.py             # B→C SEM matcher, green/red @ threshold
 ```
 
 ## Step 1 — Build images (online) and lay out your model files
@@ -232,10 +227,10 @@ When done, copy the best
 COMFY_MODELS=$PWD/transfer/comfy_models GPU=1 ./inference/run_comfyui.sh
 ```
 
-Open `http://<host>:8188`, drag in
-`inference/workflows/gds2sem_klein4b_base_lora.json`. The graph is the
-official Comfy-Org Klein 4B image-edit graph flattened, plus a
-`LoraLoaderModelOnly` node:
+Open `http://<host>:8188` — the workflow is already loaded (see
+[Making the workflow the default](#making-the-workflow-the-default) below).
+The graph is the official Comfy-Org Klein 4B image-edit graph flattened,
+plus a `LoraLoaderModelOnly` node:
 
 ```
 UNETLoader → LoraLoaderModelOnly ─────────────→ CFGGuider ─→ SamplerCustomAdvanced → VAEDecode → SaveImage
@@ -263,6 +258,60 @@ python3 inference/scripts/batch_infer.py --input-dir /path/to/gds_2_sem/A/val \
 ```
 
 Results land in `comfy_data/output/gds2sem/`.
+
+### Making the workflow the default
+
+ComfyUI has **no server-side "default workflow" setting** — which graph you
+see on load is browser-local state (`Comfy.PreviousWorkflow` and the draft
+tabs in localStorage). So a fresh browser, a kiosk, or a colleague opening
+the UI for the first time would otherwise land on ComfyUI's stock default
+graph. This repo closes that gap in two layers, both automatic:
+
+**1. The workflows are seeded into the sidebar.** On every launch,
+`run_comfyui.sh` copies `inference/workflows/*.json` into
+`$DATA/user/default/workflows/`, which is the directory ComfyUI's Workflows
+sidebar browses. They persist across restarts (that folder is on the mounted
+`user/` volume) and are one click away. Existing files are left alone, so
+edits you make in the UI survive a relaunch; pass `FORCE_SEED=1` to
+overwrite them with the repo copies.
+
+**2. A startup extension opens one of them.** The image ships a tiny
+custom-node package (`inference/comfy_extensions/gds2sem_default_workflow`)
+that registers no nodes — it exists only to serve a web extension. On
+startup the extension loads the configured workflow, looking first in
+`user/default/workflows/` (so you can edit the graph without rebuilding the
+image) and falling back to a copy bundled inside the image (so it still
+works against an empty `user/` volume).
+
+Control it from the launcher:
+
+```bash
+# defaults: the base (20-step) workflow, only when the browser has no
+# workflow of its own restored
+COMFY_MODELS=$PWD/transfer/comfy_models GPU=1 ./inference/run_comfyui.sh
+
+# open the fast 4-step graph instead, on every page load
+DEFAULT_WORKFLOW=gds2sem_klein4b_distilled_lora.json \
+DEFAULT_WORKFLOW_MODE=always \
+COMFY_MODELS=$PWD/transfer/comfy_models GPU=1 ./inference/run_comfyui.sh
+```
+
+`DEFAULT_WORKFLOW_MODE` takes:
+
+- `new-session` (default) — load it only when this browser has no
+  previously-open workflow. Safe: it never clobbers work in progress.
+- `always` — load it on every page load, overriding whatever was open. This
+  is what you want for a shared or kiosk machine.
+- `off` — leave ComfyUI's stock graph alone (the sidebar seeding still
+  happens).
+
+The launcher writes these into `user/default/comfy.settings.json`, merging
+them in without disturbing your other ComfyUI settings, so they also show up
+under **gds2sem** in the settings dialog and can be changed from the UI.
+
+If a future ComfyUI frontend changes the startup ordering and the
+auto-open stops working, layer 1 is unaffected — the workflows are still in
+the sidebar, and opening one once makes that browser restore it thereafter.
 
 ## Step 5 — Evaluate checkpoints
 
@@ -377,34 +426,22 @@ pure numpy when it isn't — so they run either on the host or inside the
 training container (`gds2sem-train:v1` already has OpenCV), with no new
 installs on the offline machine.
 
-## Step 8 — Hardware-trojan screening (prototype)
+## Related tool — hardware-trojan screening
 
-The `trojan/` subsystem turns the pipeline into a trojan detector: given a
-manufactured chip's SEM (C) plus the golden model you hold (GDS layout A and
-original SEM B), it flags regions of C that differ from golden, classifies
-each into one of ten trojan patterns (A–J), and returns a JSON verdict with
-annotated bounding-box images. It's driven from LibreChat (Opus 5) via an
-MCP server and ships as a third offline container (`gds2sem-trojan:v1`,
-built by the same `build_and_export_images.sh`).
+Trojan detection lives in its own repository, **sem-trojan-detect**. It
+consumes this pipeline's outputs (the A/B/C directories) and, when it needs
+SEM images rendered from GDS layouts, calls this repo's ComfyUI inference
+service over its HTTP API — there is no source dependency in either
+direction, so the two deploy and version independently.
 
-Quick command-line loop:
+To let it generate images, just have the inference container running:
 
 ```bash
-# make a labelled test set from clean generated C images
-python3 trojan/scripts/inject_trojans.py --gds-dir gds_2_sem/A/val \
-    --sem-dir gds_2_sem/C/val --out-dir testset --round-robin --rate 0.6
-# screen a directory containing A/ B/ C/ (C = suspect) -> D/
-python3 trojan/scripts/screen.py detect --root INPUT_DIR --out D --report
-# score against ground truth
-python3 trojan/scripts/eval_detection.py --truth testset/ground_truth.json \
-    --results D/results.json
+COMFY_MODELS=$PWD/transfer/comfy_models GPU=1 ./inference/run_comfyui.sh
 ```
 
-The default detector is a golden-model comparison (deterministic, no
-training); a YOLO/RF-DETR backend can be trained on injected sets for
-single-image detection. Full details — the pattern taxonomy, detector
-internals, evaluation numbers, the MCP tools, and the LibreChat setup — are
-in **[trojan/README.md](trojan/README.md)**.
+then point the detector at it (`--server http://HOST:8188`, or the
+`GDS2SEM_SERVER` env var in its containers). See that repo's README.
 
 ## Troubleshooting notes
 
