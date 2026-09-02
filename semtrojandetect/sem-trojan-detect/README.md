@@ -48,10 +48,12 @@ sem-trojan-detect/
 │   ├── detect.py               the detector (golden + yolo backends)
 │   ├── evaluate.py             score detections vs ground truth
 │   ├── report.py               self-contained HTML report
+│   ├── matcher.py              B vs C cell matching + match report
 │   ├── gds2sem_client.py       calls the gds2sem service over HTTP
 │   └── llm_client.py           Claude via your Open WebUI instance
 ├── scripts/
 │   ├── screen.py               the CLI (detect/demo/eval/inject/generate/llm/remote)
+│   ├── screen_matcher.py       B vs C difference report
 │   ├── export_yolo_dataset.py  injected sets -> YOLO dataset
 │   └── train_yolo.py           train the optional YOLO backend
 ├── mcp/server.py               MCP server (LibreChat / remote CLI)
@@ -121,6 +123,78 @@ images (green = addition, orange = bridge, blue = modification, red =
 deletion). `D/report.html` is a single file with the summary and every
 flagged image embedded — openable on an air-gapped box, no server.
 
+## screen_matcher — B vs C differences
+
+A second, simpler view of the same lot. Where `screen.py detect` classifies
+findings into the A–J taxonomy against the GDS golden model,
+**`screen_matcher.py` just answers "which cells changed"** between the
+golden SEM you already had (B) and the SEM you just captured (C). No
+taxonomy, no model — a fast first pass, and the evidence view an analyst
+reads next to a detection run.
+
+```bash
+python3 scripts/screen_matcher.py --root /data/incoming/lot42 \
+    --out /data/runs/lot42_M
+# or point at the two directories directly
+python3 scripts/screen_matcher.py --b-dir gds_2_sem/B/val \
+    --c-dir gds_2_sem/C/val --out match_run
+```
+
+Each image is reduced to its **cells** (8-connected bright regions), the two
+cell sets are matched one-to-one by overlap, and whatever fails to match is
+the difference:
+
+- **green** — a cell present in B but **missing from C** (material removed)
+- **red** — a cell present in C but **missing from B** (material gained)
+- matched cells are left untinted
+
+The overlay puts **B on top of C**: C is the base, B is blended over it at
+`--alpha`, then unmatched cells are tinted and outlined.
+
+> Note this is the reverse of gds2sem's `overlay_compare`, where green marked
+> *extra* material. Here red marks gained material, because gained material
+> is the suspicious direction when screening a chip that came back.
+
+### The accuracy score
+
+Scored on cells rather than pixels:
+
+```
+accuracy = matched / (matched + missing + gained)
+```
+
+so a perfect reproduction is 1.0, and every cell that appears on one side
+only costs the same regardless of its area — a hair-thin added route counts
+as much as a large block. Pixel IoU is reported beside it as a secondary,
+area-weighted view; the two diverge exactly when the differences are small
+in area but many in number, which is what a trojan insertion looks like.
+
+The report gives the overall score, the mean per-image score, and names the
+weakest image.
+
+### Output
+
+Written into `--out`:
+
+| file | what it is |
+|---|---|
+| `match_report.html` | self-contained: **every B and C image** plus the B-over-C overlay, summary tiles, the accuracy score and a per-image table sorted worst-first |
+| `match_results.json` | the same numbers plus every missing/gained bounding box |
+| `overlays/*.png` | the composited overlays on their own |
+
+Images are embedded as JPEG so a lot-sized report stays openable — 12 pairs
+is about 2 MB. Pass `--lossless` for pixel-exact PNG (the same 12 pairs
+becomes ~8 MB), or shrink `--thumb-width`.
+
+### Tuning
+
+`--match-iou` (default 0.25) is the overlap above which two cells are
+considered the same cell. **Lower it** if a slightly shifted or rescaled
+capture reports paired false missing/gained cells — that pattern (a green
+and a red cell in the same spot) means one real cell failed to pair with
+itself. `--tolerance` adds px of slack to the overlap test, and
+`--min-area` drops specks.
+
 ## LibreChat (Opus 5 + MCP)
 
 1. Run the MCP service on the offline host:
@@ -141,9 +215,9 @@ flagged image embedded — openable on an air-gapped box, no server.
    summarises the verdict, and calls `show_detection` to display each
    flagged image with its boxes inline.
 
-Tools: `list_trojan_patterns`, `detect_trojans`, `show_detection`,
-`inject_trojans`, `generate_sem`, `summarize_run` — all sandboxed to the
-data root.
+Tools: `list_trojan_patterns`, `detect_trojans`, `match_sems`,
+`show_detection`, `inject_trojans`, `generate_sem`, `summarize_run` — all
+sandboxed to the data root.
 
 Any machine that can reach the service can also drive it from a shell,
 without LibreChat:

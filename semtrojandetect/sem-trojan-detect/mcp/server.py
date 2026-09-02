@@ -10,6 +10,8 @@ or scripts/screen.py's `remote` mode) as a small set of typed tools:
   show_detection         return one annotated image for inline display
   inject_trojans         build a labelled test set (demo/eval only)
   generate_sem           render SEM from GDS via the gds2sem service
+  match_sems             B vs C cell-level difference report
+  summarize_run          Claude-written triage summary of a run
 
 Transport: stdio by default (what LibreChat launches), or streamable-http
 when MCP_HTTP=1 (MCP_HOST / MCP_PORT) to run as a long-lived service on its
@@ -32,6 +34,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from trojanlib import (catalog, evaluate, inject_directory,  # noqa: E402
                        screen_directory, write_report)
 from trojanlib.detect import DetectParams  # noqa: E402
+from trojanlib.matcher import (MatchParams, match_directories,  # noqa: E402
+                               write_match_report)
 from trojanlib import gds2sem_client as g2s  # noqa: E402
 from trojanlib import llm_client as llm  # noqa: E402
 
@@ -154,6 +158,39 @@ def generate_sem(gds_dir: str, output_dir: str, variant: str = "base",
     return json.dumps({"output_dir": str(_safe(output_dir)),
                        "generated": len(written),
                        "server": GDS2SEM_SERVER}, indent=2)
+
+
+@mcp.tool()
+def match_sems(input_dir: str, output_subdir: str = "",
+               match_iou: float = 0.25, tolerance: int = 2) -> str:
+    """Compare the golden SEM images (B/) against the suspect ones (C/)
+    cell by cell, and write a visual match report.
+
+    Unlike detect_trojans, this makes no attempt to classify anything — it
+    just answers "which cells changed": cells present in B but missing from
+    C, and cells present in C but absent from B. Useful as a fast
+    first-pass sanity check, and as the evidence view an analyst reads
+    alongside a detection run.
+
+    Writes match_report.html (every B and C image plus a B-over-C overlay,
+    green for missing, red for gained), match_results.json and
+    overlays/*.png. Returns the summary including the cell accuracy score.
+    """
+    in_path = _safe(input_dir)
+    for sub in ("B", "C"):
+        if not (in_path / sub).is_dir():
+            raise ValueError(f"{in_path} has no {sub}/ subdirectory")
+    out = (_safe(output_subdir, must_exist=False) if output_subdir
+           else OUT_ROOT / (in_path.name + "_M"))
+    report = match_directories(in_path / "B", in_path / "C", out,
+                               MatchParams(tolerance=tolerance,
+                                           match_iou=match_iou),
+                               quiet=True)
+    path = write_match_report(out, report)
+    return json.dumps({"output_dir": str(out),
+                       "report_html": str(path),
+                       "results_json": str(out / "match_results.json"),
+                       "summary": report["summary"]}, indent=2)
 
 
 @mcp.tool()
