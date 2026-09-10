@@ -48,12 +48,14 @@ sem-trojan-detect/
 │   ├── detect.py               the detector (golden + yolo backends)
 │   ├── evaluate.py             score detections vs ground truth
 │   ├── report.py               self-contained HTML report
-│   ├── matcher.py              B vs C cell matching + match report
+│   ├── matcher.py              B vs C cell/connectivity matching + report
+│   ├── gds_trojans.py          5 layout trojan patterns (A–E) + injector
 │   ├── gds2sem_client.py       calls the gds2sem service over HTTP
 │   └── llm_client.py           Claude via your Open WebUI instance
 ├── scripts/
 │   ├── screen.py               the CLI (detect/demo/eval/inject/generate/llm/remote)
 │   ├── screen_matcher.py       B vs C difference report
+│   ├── inject_gds_trojans.py   stamp trojan regions into GDS layouts
 │   ├── export_yolo_dataset.py  injected sets -> YOLO dataset
 │   └── train_yolo.py           train the optional YOLO backend
 ├── mcp/server.py               MCP server (LibreChat / remote CLI)
@@ -123,76 +125,125 @@ images (green = addition, orange = bridge, blue = modification, red =
 deletion). `D/report.html` is a single file with the summary and every
 flagged image embedded — openable on an air-gapped box, no server.
 
-## screen_matcher — B vs C differences
+## Layout trojans → SEM → detection
 
-A second, simpler view of the same lot. Where `screen.py detect` classifies
-findings into the A–J taxonomy against the GDS golden model,
-**`screen_matcher.py` just answers "which cells changed"** between the
-golden SEM you already had (B) and the SEM you just captured (C). No
-taxonomy, no model — a fast first pass, and the evidence view an analyst
-reads next to a detection run.
+A second, layout-level workflow that produces labelled training data and
+exercises the matcher end to end. Where `screen.py detect` classifies single
+features against the GDS golden model, this pair works on **regions**: a
+group of neighbouring cells in which something was added, removed, bridged
+or cut.
+
+```
+clean layouts ──gds2sem──► SEM = B (golden)
+      │
+      └─inject_gds_trojans──► tampered layouts ──gds2sem──► SEM = C (suspect)
+                                                               │
+                        screen_matcher.py  B vs C  ◄───────────┘
+```
+
+### 1. Inject trojans into the layouts
+
+```bash
+python3 scripts/inject_gds_trojans.py --gds-dir gds_2_sem/A/train \
+    --out-dir A_trojan --rate 0.7 --max-per-image 2
+```
+
+Five patterns, cycled round-robin so a 70-image training set gets a balanced
+spread (~13–16 regions each):
+
+| label | pattern | what it does to the layout |
+|---|---|---|
+| **Trojan A** | inserted_cluster | 2–3 new cells placed in the group's whitespace |
+| **Trojan B** | depopulated | 1–2 existing cells deleted from the group |
+| **Trojan C** | merged_pair | two adjacent cells bridged into one |
+| **Trojan D** | severed_net | one cell cut into two separated pieces |
+| **Trojan E** | rerouted_block | mixed — one added, one removed, one pair bridged |
+
+Each region is the modified cells **plus their untouched neighbours**, which
+is the unit an analyst is actually asked to find. `gds_trojans.json` records
+every region box, its label, and the individual edits — ground truth for
+scoring, and the source for a YOLO training set.
+
+`--patterns CD` restricts to a subset; `--group-size` sets how many cells
+form a region; `--rate` how many layouts get tampered at all.
+
+### 2. Compare the SEMs
 
 ```bash
 python3 scripts/screen_matcher.py --root /data/incoming/lot42 \
     --out /data/runs/lot42_M
-# or point at the two directories directly
-python3 scripts/screen_matcher.py --b-dir gds_2_sem/B/val \
-    --c-dir gds_2_sem/C/val --out match_run
+# score the detections against the layout ground truth:
+python3 scripts/screen_matcher.py --b-dir B --c-dir C --out run \
+    --truth A_trojan/gds_trojans.json
 ```
 
-Each image is reduced to its **cells** (8-connected bright regions), the two
-cell sets are matched one-to-one by overlap, and whatever fails to match is
-the difference:
+Each image is reduced to its **cells**, and the B and C cell sets are linked
+into an overlap graph. Every component of that graph says what happened:
 
-- **green** — a cell present in B but **missing from C** (material removed)
-- **red** — a cell present in C but **missing from B** (material gained)
-- matched cells are left untinted
+| overlay | meaning |
+|---|---|
+| **red** | a cell in B, **missing from C** — material removed |
+| **green** | a cell in C, **absent from B** — material gained |
+| **light blue** | connectivity changed — cells that should be **connected** (a net was severed) or **separated** (two were bridged) |
+| **yellow box** | a trojan region: nearby anomalies grouped and labelled *Trojan A … Trojan E* |
 
-The overlay puts **B on top of C**: C is the base, B is blended over it at
-`--alpha`, then unmatched cells are tinted and outlined.
+The overlay puts **B on top of C** — C is the base, B blended over it at
+`--alpha`, anomalies tinted, regions boxed and labelled.
 
-> Note this is the reverse of gds2sem's `overlay_compare`, where green marked
-> *extra* material. Here red marks gained material, because gained material
-> is the suspicious direction when screening a chip that came back.
+Linking uses **containment**, not IoU: a merged cell is far larger than
+either cell it swallowed, so their IoU is low while containment is near 1.
+That is what makes merges and splits detectable at all rather than showing
+up as a confusing mix of missing and gained.
+
+Regions are labelled from the mix of changes inside them — only additions →
+Trojan A, only removals → B, only merges → C, only splits → D, any mixture →
+E — which is one-to-one with the five injector recipes, so the injector
+doubles as ground truth without the detector ever seeing it.
+
+> **Colour change.** Red now marks missing and green marks gained, matching
+> gds2sem's `overlay_compare`. Earlier builds of this script had them the
+> other way round; `--legacy-colors` restores that.
 
 ### The accuracy score
 
-Scored on cells rather than pixels:
-
 ```
-accuracy = matched / (matched + missing + gained)
+accuracy = matched / (matched + missing + gained + connectivity)
 ```
 
-so a perfect reproduction is 1.0, and every cell that appears on one side
-only costs the same regardless of its area — a hair-thin added route counts
-as much as a large block. Pixel IoU is reported beside it as a secondary,
-area-weighted view; the two diverge exactly when the differences are small
-in area but many in number, which is what a trojan insertion looks like.
+Scored on cells rather than pixels, so every changed cell costs the same
+regardless of area — a hair-thin added route weighs as much as a large
+block. Pixel IoU sits beside it as an area-weighted second opinion; the two
+diverge exactly when differences are small in area but many in number, which
+is what an insertion looks like.
 
-The report gives the overall score, the mean per-image score, and names the
-weakest image.
+With `--truth`, the report also scores detected regions against the layout
+ground truth: recall, precision, label accuracy and an A–E confusion matrix.
+On a 70-layout synthetic run (51 tampered, 19 clean) the current defaults
+give **89% region recall, 100% precision, 86% label accuracy**, with zero
+false alarms on the clean images. The residual label errors are almost all
+Trojan E read as A or B — when only part of a mixed recipe lands close
+enough to cluster, the region honestly only contains one kind of change.
 
 ### Output
 
-Written into `--out`:
-
 | file | what it is |
 |---|---|
-| `match_report.html` | self-contained: **every B and C image** plus the B-over-C overlay, summary tiles, the accuracy score and a per-image table sorted worst-first |
-| `match_results.json` | the same numbers plus every missing/gained bounding box |
+| `match_report.html` | self-contained: **every B and C image** plus the B-over-C overlay, summary tiles, the accuracy score, the trojan-region table and a per-image table sorted worst-first |
+| `match_results.json` | the same numbers plus every anomaly and region box |
 | `overlays/*.png` | the composited overlays on their own |
 
-Images are embedded as JPEG so a lot-sized report stays openable — 12 pairs
-is about 2 MB. Pass `--lossless` for pixel-exact PNG (the same 12 pairs
-becomes ~8 MB), or shrink `--thumb-width`.
+Images embed as JPEG so a lot-sized report stays openable — 12 pairs is
+about 2 MB. `--lossless` gives pixel-exact PNG; `--thumb-width` shrinks.
 
 ### Tuning
 
-`--match-iou` (default 0.25) is the overlap above which two cells are
-considered the same cell. **Lower it** if a slightly shifted or rescaled
-capture reports paired false missing/gained cells — that pattern (a green
-and a red cell in the same spot) means one real cell failed to pair with
-itself. `--tolerance` adds px of slack to the overlap test, and
+`--link-cover` (default 0.35) is the containment above which a B cell and a
+C cell are linked. **Lower it** if a slightly shifted capture reports paired
+false missing/gained cells — that pattern (a red and a green cell in the
+same spot) means one real cell failed to link to itself. `--group-gap`
+(default 56) is how close anomalies must be to join one region: raise it if
+one trojan is being reported as several, lower it if separate trojans are
+merging into one. `--tolerance` adds px of slack to the overlap test, and
 `--min-area` drops specks.
 
 ## LibreChat (Opus 5 + MCP)
@@ -216,8 +267,8 @@ itself. `--tolerance` adds px of slack to the overlap test, and
    flagged image with its boxes inline.
 
 Tools: `list_trojan_patterns`, `detect_trojans`, `match_sems`,
-`show_detection`, `inject_trojans`, `generate_sem`, `summarize_run` — all
-sandboxed to the data root.
+`inject_gds_trojans`, `show_detection`, `inject_trojans`, `generate_sem`,
+`summarize_run` — all sandboxed to the data root.
 
 Any machine that can reach the service can also drive it from a shell,
 without LibreChat:

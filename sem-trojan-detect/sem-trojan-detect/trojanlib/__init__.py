@@ -21,7 +21,10 @@ from .llm_client import LLMError, summarize_run              # noqa: F401
 from .evaluate import evaluate                              # noqa: F401
 from .inject import inject_directory                        # noqa: F401
 from .matcher import (MatchParams, match_directories,       # noqa: F401
+                      save_results, score_against_truth,
                       write_match_report)
+from .gds_trojans import (ALL_PATTERNS, PATTERNS,           # noqa: F401
+                          inject_directory as inject_gds_trojans)
 from .patterns import ALL_KEYS, REGISTRY, catalog           # noqa: F401
 from .report import write_report                            # noqa: F401
 

@@ -10,7 +10,8 @@ or scripts/screen.py's `remote` mode) as a small set of typed tools:
   show_detection         return one annotated image for inline display
   inject_trojans         build a labelled test set (demo/eval only)
   generate_sem           render SEM from GDS via the gds2sem service
-  match_sems             B vs C cell-level difference report
+  match_sems             B vs C cell/connectivity diff + trojan regions
+  inject_gds_trojans     stamp trojan regions into GDS layouts
   summarize_run          Claude-written triage summary of a run
 
 Transport: stdio by default (what LibreChat launches), or streamable-http
@@ -35,7 +36,10 @@ from trojanlib import (catalog, evaluate, inject_directory,  # noqa: E402
                        screen_directory, write_report)
 from trojanlib.detect import DetectParams  # noqa: E402
 from trojanlib.matcher import (MatchParams, match_directories,  # noqa: E402
+                               save_results, score_against_truth,
                                write_match_report)
+from trojanlib.gds_trojans import (  # noqa: E402
+    inject_directory as inject_gds_dir)
 from trojanlib import gds2sem_client as g2s  # noqa: E402
 from trojanlib import llm_client as llm  # noqa: E402
 
@@ -162,19 +166,22 @@ def generate_sem(gds_dir: str, output_dir: str, variant: str = "base",
 
 @mcp.tool()
 def match_sems(input_dir: str, output_subdir: str = "",
-               match_iou: float = 0.25, tolerance: int = 2) -> str:
+               link_cover: float = 0.35, tolerance: int = 2,
+               truth_json: str = "") -> str:
     """Compare the golden SEM images (B/) against the suspect ones (C/)
     cell by cell, and write a visual match report.
 
-    Unlike detect_trojans, this makes no attempt to classify anything — it
-    just answers "which cells changed": cells present in B but missing from
-    C, and cells present in C but absent from B. Useful as a fast
-    first-pass sanity check, and as the evidence view an analyst reads
-    alongside a detection run.
+    Answers "which cells changed": present in B but missing from C (red),
+    present in C but absent from B (green), and cells whose connectivity
+    changed — bridged together or severed apart (light blue). Nearby
+    anomalies are grouped into trojan regions drawn as yellow boxes and
+    labelled Trojan A … Trojan E.
 
-    Writes match_report.html (every B and C image plus a B-over-C overlay,
-    green for missing, red for gained), match_results.json and
-    overlays/*.png. Returns the summary including the cell accuracy score.
+    Writes match_report.html (every B and C image plus the B-over-C
+    overlay), match_results.json and overlays/*.png. Pass truth_json (a
+    gds_trojans.json from the layout injector) to also score the detected
+    regions against ground truth. Returns the summary including the cell
+    accuracy score and the per-pattern region counts.
     """
     in_path = _safe(input_dir)
     for sub in ("B", "C"):
@@ -184,13 +191,42 @@ def match_sems(input_dir: str, output_subdir: str = "",
            else OUT_ROOT / (in_path.name + "_M"))
     report = match_directories(in_path / "B", in_path / "C", out,
                                MatchParams(tolerance=tolerance,
-                                           match_iou=match_iou),
+                                           link_cover=link_cover),
                                quiet=True)
+    if truth_json:
+        score_against_truth(report, _safe(truth_json))
+    save_results(out, report)
     path = write_match_report(out, report)
-    return json.dumps({"output_dir": str(out),
-                       "report_html": str(path),
-                       "results_json": str(out / "match_results.json"),
-                       "summary": report["summary"]}, indent=2)
+    payload = {"output_dir": str(out), "report_html": str(path),
+               "results_json": str(out / "match_results.json"),
+               "summary": report["summary"]}
+    if "truth" in report:
+        payload["vs_ground_truth"] = report["truth"]
+    return json.dumps(payload, indent=2)
+
+
+@mcp.tool()
+def inject_gds_trojans(gds_dir: str, output_dir: str, rate: float = 0.7,
+                       max_per_image: int = 2, patterns: str = "ABCDE",
+                       seed: int = 0) -> str:
+    """Stamp trojan regions into a directory of GDS LAYOUT images, to build a
+    labelled training or test set.
+
+    Edits the layout itself — inserting cells, deleting cells, bridging
+    adjacent pairs, cutting nets — then groups each modification with its
+    neighbouring cells and labels that group Trojan A … Trojan E. Writes the
+    tampered layouts plus gds_trojans.json (region boxes, labels, edits).
+
+    Render the output through the gds2sem service to get the suspect SEM
+    set, then compare it against the SEM rendered from the clean layouts.
+    For evaluation and training data only — never on real screening data."""
+    meta = inject_gds_dir(_safe(gds_dir), _safe(output_dir, must_exist=False),
+                          rate, max_per_image, list(patterns), seed=seed,
+                          quiet=True)
+    return json.dumps({"output_dir": str(_safe(output_dir)),
+                       "ground_truth": str(_safe(output_dir) / "gds_trojans.json"),
+                       "summary": meta["summary"],
+                       "catalog": meta["catalog"]}, indent=2)
 
 
 @mcp.tool()
