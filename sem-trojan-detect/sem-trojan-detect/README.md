@@ -55,6 +55,7 @@ sem-trojan-detect/
 ├── scripts/
 │   ├── screen.py               the CLI (detect/demo/eval/inject/generate/llm/remote)
 │   ├── screen_matcher.py       B vs C difference report
+│   ├── doctor.py               environment diagnostic (stdlib only)
 │   ├── inject_gds_trojans.py   stamp trojan regions into GDS layouts
 │   ├── export_yolo_dataset.py  injected sets -> YOLO dataset
 │   └── train_yolo.py           train the optional YOLO backend
@@ -63,6 +64,7 @@ sem-trojan-detect/
 ├── docker/                     Dockerfile + requirements (cu126, offline)
 ├── offline_prep/
 │   ├── build_and_export_images.sh   online: build + save the image
+│   ├── install_local.sh             offline: venv install, no docker
 │   └── verify_setup.sh              offline: check everything is in place
 ├── run_screen.sh               one-shot containerized CLI run
 └── run_detector_mcp.sh         run the MCP service (for LibreChat / remote)
@@ -245,6 +247,79 @@ same spot) means one real cell failed to link to itself. `--group-gap`
 one trojan is being reported as several, lower it if separate trojans are
 merging into one. `--tolerance` adds px of slack to the overlap test, and
 `--min-area` drops specks.
+
+## Troubleshooting installs
+
+### What this actually depends on
+
+**numpy and Pillow. That is the whole hard requirement.** Everything else is
+optional and degrades cleanly:
+
+| package | needed for | if absent |
+|---|---|---|
+| `opencv-python-headless` | faster components / morphology / blur | `trojanlib.imagelib` uses pure-numpy fallbacks — same results, slower |
+| `mcp` | the MCP server and `screen.py remote` | local CLI still works |
+| `torch` + `ultralytics` | the YOLO detection backend only | golden backend (the default) still works |
+
+The core is exercised against **numpy 1.26 through 2.4**, so whatever version
+your mirror carries is almost certainly fine. `docker/requirements.txt` uses
+ranges rather than exact pins for exactly that reason.
+
+### "Cannot install numpy 2.1.3, 1.26.4 is already installed" at build time
+
+Ubuntu 24.04's system Python is *externally managed* and its numpy belongs to
+dpkg, not pip — pip cannot uninstall it (there is no RECORD file), so any
+`pip install numpy==X` into the system interpreter fails. Installing apt's
+`python3-opencv` is what pulls that numpy in.
+
+Fixed in the image by **installing everything into a virtualenv at
+`/opt/venv`** and no longer installing `python3-opencv` from apt. pip owns its
+own site-packages there, so nothing is fought over and
+`--break-system-packages` is gone.
+
+If you are building against an internal mirror:
+
+```bash
+PIP_INDEX=https://pypi.internal/simple ./offline_prep/build_and_export_images.sh ./transfer
+# leaner builds, if a package is missing from your mirror:
+WITH_TORCH=0 WITH_CV2=0 ./offline_prep/build_and_export_images.sh ./transfer
+```
+
+### "ModuleNotFoundError: No module named 'numpy'" when running screen.py
+
+Almost always the *wrong interpreter* — packages installed for one Python,
+script run under another. Ask the doctor, which is stdlib-only so it still
+runs when numpy is missing:
+
+```bash
+python3 scripts/doctor.py                     # on the host
+./run_screen.sh doctor                        # inside the image
+docker run --rm sem-trojan-detect:v1 python /app/scripts/doctor.py
+```
+
+It prints which interpreter is running, whether it is a virtualenv, and where
+each dependency was found — apt's `dist-packages` versus pip's
+`site-packages`. Seeing both is the tell for the conflict above.
+
+### Running on the offline host without docker
+
+```bash
+./offline_prep/install_local.sh --index-url https://pypi.internal/simple
+# optional extras, each skipped with a warning if your mirror lacks it:
+./offline_prep/install_local.sh --index-url https://pypi.internal/simple \
+    --with-cv2 --with-mcp
+```
+
+This builds a virtualenv at `./.venv`, installs only numpy and Pillow by
+default, and finishes by running the doctor. Then use that interpreter:
+
+```bash
+.venv/bin/python scripts/screen_matcher.py --root /data/lot42 --out /data/runs/M
+```
+
+`--extra-index-url`, `--trusted-host` and `--find-links` are passed through,
+so a local wheelhouse works too:
+`./offline_prep/install_local.sh --find-links /mnt/wheels --index-url ""`.
 
 ## LibreChat (Opus 5 + MCP)
 

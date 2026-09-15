@@ -24,6 +24,12 @@ OPENWEBUI_API_KEY="${OPENWEBUI_API_KEY:-}"
 mkdir -p "${DATA}/runs"
 gpu_args=(); [ -n "${GPU}" ] && gpu_args=(--gpus "device=${GPU}")
 
+# `./run_screen.sh doctor` diagnoses the image instead of screening
+if [ "${1:-}" = "doctor" ]; then
+  exec docker run --rm -i -v "${DATA}:/data" "${IMAGE}" \
+    python /app/scripts/doctor.py
+fi
+
 docker run --rm -it \
   "${gpu_args[@]}" \
   --add-host=host.docker.internal:host-gateway \

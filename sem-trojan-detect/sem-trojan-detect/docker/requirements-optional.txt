@@ -1,0 +1,6 @@
+# OPTIONAL extras. None of these are needed to screen images; each one only
+# adds a capability. Install what your mirror has and skip the rest — the
+# code degrades cleanly.
+opencv-python-headless>=4.8,<5   # faster components/morphology/blur
+mcp>=1.0                         # MCP server + `screen.py remote`
+# ultralytics>=8.1,<9            # YOLO backend (also pulls torch — large)
