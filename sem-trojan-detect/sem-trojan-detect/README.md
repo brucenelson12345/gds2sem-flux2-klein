@@ -49,12 +49,14 @@ sem-trojan-detect/
 │   ├── evaluate.py             score detections vs ground truth
 │   ├── report.py               self-contained HTML report
 │   ├── matcher.py              B vs C cell/connectivity matching + report
+│   ├── matcher_enhanced.py     whole-cell vs partial-cell matching
 │   ├── gds_trojans.py          5 layout trojan patterns (A–E) + injector
 │   ├── gds2sem_client.py       calls the gds2sem service over HTTP
 │   └── llm_client.py           Claude via your Open WebUI instance
 ├── scripts/
 │   ├── screen.py               the CLI (detect/demo/eval/inject/generate/llm/remote)
 │   ├── screen_matcher.py       B vs C difference report
+│   ├── screen_matcher_enhanced.py  whole-cell events boxed + captioned
 │   ├── doctor.py               environment diagnostic (stdlib only)
 │   ├── inject_gds_trojans.py   stamp trojan regions into GDS layouts
 │   ├── export_yolo_dataset.py  injected sets -> YOLO dataset
@@ -247,6 +249,53 @@ same spot) means one real cell failed to link to itself. `--group-gap`
 one trojan is being reported as several, lower it if separate trojans are
 merging into one. `--tolerance` adds px of slack to the overlap test, and
 `--min-area` drops specks.
+
+## screen_matcher_enhanced — whole-cell vs partial-cell
+
+A separate matcher alongside `screen_matcher.py`, for when you want the
+overlay to distinguish **a whole cell changing** from **part of one
+changing**. Same B-over-C composite; what differs is that a box means
+"the entire cell", and a bare tint means "a piece of a cell".
+
+```bash
+python3 scripts/screen_matcher_enhanced.py --root /data/incoming/lot42 \
+    --out /data/runs/lot42_E
+python3 scripts/screen_matcher_enhanced.py --b-dir B/val --c-dir C/val --out run
+```
+
+**Whole cell** — tinted, outlined, boxed, and captioned in the box colour:
+
+| caption | colour | meaning |
+|---|---|---|
+| `missing` | red | a cell in B with no counterpart in C |
+| `addition` | green | a cell in C with no counterpart in B |
+| `join` | blue | cells fused together — should be separated |
+| `split` | yellow-orange | a cell broken apart — should be connected |
+
+**Part of a cell** — tinted only, no box, no caption: red where material was
+lost from a cell that is otherwise still there, green where material was
+gained on one. That is a cell which got shorter, longer, wider or notched.
+
+That partial case is precisely what `screen_matcher.py` cannot see: a
+shortened cell still pairs one-to-one with its counterpart and is reported
+as matched. Here the two shapes are differenced *inside* the pair, so it
+surfaces — with the absence of a box saying "the cell is still there".
+
+Two independent renders disagree along every edge by a pixel or two, so the
+shape difference is morphologically opened and anything under
+`--min-parcel-area` (default 40 px) is discarded. On a 12-pair realistic run
+that yields **zero** spurious partial changes; raise it if your captures are
+noisier.
+
+Note this matcher does **no** trojan-region grouping — that is
+`screen_matcher.py`'s job, and its yellow region boxes would collide with
+the yellow-orange split boxes here. Use them for different questions: this
+one for "what exactly changed about this cell", the other for "which group
+of changes constitutes a trojan".
+
+Accuracy is `clean / (clean + partial + whole-cell events)`. Output is
+`enhanced_report.html`, `enhanced_results.json` (every event and parcel box)
+and `overlays/*.png`.
 
 ## Troubleshooting installs
 

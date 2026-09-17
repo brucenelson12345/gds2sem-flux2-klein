@@ -25,6 +25,10 @@ from .matcher import (MatchParams, match_directories,       # noqa: F401
                       write_match_report)
 from .gds_trojans import (ALL_PATTERNS, PATTERNS,           # noqa: F401
                           inject_directory as inject_gds_trojans)
+from .matcher_enhanced import (EnhancedParams,              # noqa: F401
+                               match_directories_enhanced,
+                               save_results_enhanced,
+                               write_enhanced_report)
 from .patterns import ALL_KEYS, REGISTRY, catalog           # noqa: F401
 from .report import write_report                            # noqa: F401
 
